@@ -34,20 +34,28 @@ from typing import List, Optional, Tuple, Dict, Any
 from collections import defaultdict
 from urllib.parse import quote
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+# tkinter нужен только для GUI (класс App). Renderer и функции анализа
+# работают headless — поэтому импорт опционален, чтобы их можно было
+# использовать на сервере без дисплея (например, из chess_meme_example.py).
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox
+    _HAS_TK = True
+except ImportError:
+    tk = ttk = filedialog = messagebox = None
+    _HAS_TK = False
 
 # Проверка и установка зависимостей
 try:
     import requests
 except ImportError:
-    messagebox.showerror("Ошибка импорта", "Библиотека 'requests' не найдена. Установите её: pip install requests")
+    print("Ошибка импорта: библиотека 'requests' не найдена. Установите её: pip install requests")
     sys.exit(1)
 
 try:
     import chess, chess.pgn, chess.engine
 except ImportError:
-    messagebox.showerror("Ошибка импорта", "Библиотека 'python-chess' не найдена. Установите её: pip install chess")
+    print("Ошибка импорта: библиотека 'python-chess' не найдена. Установите её: pip install chess")
     sys.exit(1)
 
 from PIL import Image, ImageDraw, ImageFont
@@ -1349,25 +1357,22 @@ class Renderer:
         return canvas.convert('RGB')
 
     def _get_or_create_frame(self, frame_idx, *args, **kwargs):
-        """Получает кадр из кэша или создает новый."""
-        # Сначала проверяем кэш в памяти
-        if self.use_cache and frame_idx in self._in_memory_frame_cache:
-            return self._in_memory_frame_cache[frame_idx]
+        """Получает кадр из дискового кэша или создает новый.
 
+        Внутри одного рендера каждый frame_idx уникален и запрашивается ровно
+        один раз, поэтому кэш кадров в памяти не нужен — он лишь рос бы до OOM
+        на длинных партиях. Дисковый кэш сохраняется (полезен между прогонами).
+        """
         if not self.use_cache:
             return self._compose_frame(*args, **kwargs)
 
-        # Затем проверяем дисковый кэш
         frame_filename = self.cache_dir / f"frame_{frame_idx:06d}.png"
         try:
             if frame_filename.exists():
-                image = Image.open(frame_filename)
-                self._in_memory_frame_cache[frame_idx] = image
-                return image
+                return Image.open(frame_filename)
 
             frame_image = self._compose_frame(*args, **kwargs)
             frame_image.save(frame_filename, "PNG")
-            self._in_memory_frame_cache[frame_idx] = frame_image
             return frame_image
         except Exception as e:
             self.log(f"⚠️ Ошибка кэширования кадра {frame_idx}: {e}", level=logging.WARNING)
@@ -1513,8 +1518,10 @@ class Renderer:
                                                                        str(self.music_path)]; music_map_idx = input_count; all_filters.append(
             f"[{music_map_idx}:a]aloop=loop=-1:size=2e+09,atrim=duration={final_duration:.3f},aresample=async=1[a_looped]"); music_map_idx = "a_looped"
         if all_filters: cmd += ["-filter_complex", ";".join(all_filters)]
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-map",
-                f"[{last_video_tag.strip('[]')}]"]
+        # Без filter_complex лейбла [0:v] не существует — мапим поток напрямую (0:v).
+        # С фильтрами last_video_tag указывает на выходной лейбл графа.
+        video_map = f"[{last_video_tag.strip('[]')}]" if all_filters else last_video_tag.strip('[]')
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-map", video_map]
         if music_map_idx != -1: cmd += ["-c:a", "aac", "-b:a", "192k", "-map", f"[{music_map_idx}]"]
         cmd += ["-t", f"{final_duration:.3f}", "-movflags", "+faststart", str(out_path)]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1671,7 +1678,7 @@ class Renderer:
             return None
 
 
-class ScrollableFrame(ttk.Frame):
+class ScrollableFrame(ttk.Frame if _HAS_TK else object):
     def __init__(self, container, *args, **kwargs):
         super().__init__(container, *args, **kwargs)
         canvas = tk.Canvas(self);
@@ -1684,7 +1691,7 @@ class ScrollableFrame(ttk.Frame):
         scrollbar.pack(side="right", fill="y")
 
 
-class App(tk.Tk):
+class App(tk.Tk if _HAS_TK else object):
     def __init__(self):
         super().__init__();
         self.title("Шахматы Видео — GUI v24.2.1 (Refactored)");
@@ -2939,5 +2946,9 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    if not _HAS_TK:
+        print("Ошибка: tkinter не установлен — GUI недоступен. "
+              "Установите python3-tk или используйте CLI (chess_meme_example.py).")
+        sys.exit(1)
     app = App()
     app.mainloop()

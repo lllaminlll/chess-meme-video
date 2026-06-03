@@ -1,0 +1,12 @@
+[Event "Casual Game"]
+[Site "https://lichess.org"]
+[Date "24.09.2024, 21:55:04"]
+[White "Anonymous"]
+[Black "Anonymous"]
+[Result "0-1"]
+[PlyCount "36"]
+[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Variant "Standard"]
+[Termination "mate"]
+
+1. e4 c5 2. Nf3 e6 3. Bc4 Nf6 4. e5 d5 5. exf6 dxc4 6. fxg7 Bxg7 7. Qe2 b6 8. Qxc4 Nc6 9. Nc3 Bb7 10. d3 Nd4 11. Nxd4 Bxd4 12. Qb5+ Ke7 13. f3 Rg8 14. Kf1 Rxg2 15. Kxg2 Qg8+ 16. Kf1 Bxf3 17. Ne4 Qg2+ 18. Ke1 Qe2# 0-1
