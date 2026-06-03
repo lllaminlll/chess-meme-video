@@ -1,0 +1,31 @@
+# Генерируемые видео и кэш
+output/
+hd_chess_videos/
+_frame_cache/
+*.tmp
+
+# Кэши анализа
+lichess_eval_cache.json
+llm_meme_cache.json
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Логи
+*.log
+chess_video_creator_log.txt
+
+# Ассеты (большие бинари — добавлять вручную или через LFS)
+chess_assets/pieces/**/*.png
+chess_assets/boards/**/*.png
+chess_assets/fonts/*.ttf
+chess_assets/fonts/*.otf
+chess_icons/*.png
+assets/memes/*.gif
