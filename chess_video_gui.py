@@ -52,6 +52,13 @@ except ImportError:
 
 from PIL import Image, ImageDraw, ImageFont
 
+try:
+    from chess_meme import build_overlay_specs, apply_meme_overlays, compute_move_timestamps
+    import anthropic as _anthropic
+    _MEME_PIPELINE_OK = True
+except ImportError:
+    _MEME_PIPELINE_OK = False
+
 # ---------------- Константы и пресеты ----------------
 CONFIG_FILE = Path("config.json")
 DEFAULT_FPS = 30
@@ -1775,6 +1782,9 @@ class App(tk.Tk):
         self.base_anim_duration = tk.DoubleVar()
         self.base_delay_duration = tk.DoubleVar()
         self.force_gui_speed = tk.BooleanVar()
+        self.memes_enabled = tk.BooleanVar()
+        self.memes_dir = tk.StringVar()
+        self.gif_duration = tk.DoubleVar()
 
         self.log_queue = queue.Queue();
         self.cancel_flag = threading.Event();
@@ -1968,6 +1978,28 @@ class App(tk.Tk):
         speed_row2.pack(fill='x', **pad_s);
         ttk.Checkbutton(speed_row2, text="Применять к 16:9", variable=self.apply_speedup_to_horizontal).pack(
             side="left", padx=(4, 0))
+        meme_frame = ttk.LabelFrame(tab1, text="🎭 Мем-оверлеи (GIF поверх видео)");
+        meme_frame.grid(row=r, column=0, columnspan=4, sticky="we", **pad);
+        r += 1
+        meme_row1 = ttk.Frame(meme_frame);
+        meme_row1.pack(fill='x', **pad_s)
+        meme_status = "(chess_meme не установлен)" if not _MEME_PIPELINE_OK else ""
+        ttk.Checkbutton(meme_row1, text=f"Включить мем-оверлеи {meme_status}",
+                        variable=self.memes_enabled,
+                        state="normal" if _MEME_PIPELINE_OK else "disabled").pack(side="left")
+        ttk.Label(meme_row1, text="Длит. GIF (с):").pack(side="left", padx=(20, 0))
+        ttk.Spinbox(meme_row1, from_=0.5, to=10.0, increment=0.5,
+                    textvariable=self.gif_duration, width=6).pack(side="left", padx=4)
+        meme_row2 = ttk.Frame(meme_frame);
+        meme_row2.pack(fill='x', **pad_s)
+        ttk.Label(meme_row2, text="Папка с GIF:").pack(side="left")
+        ttk.Entry(meme_row2, textvariable=self.memes_dir).pack(side="left", fill='x', expand=True, padx=4)
+        ttk.Button(meme_row2, text="Выбрать…",
+                   command=lambda: self._select_dir(self.memes_dir)).pack(side="left")
+        ttk.Label(meme_frame,
+                  text="GIF-файлы: crying.gif, facepalm.gif, shock.gif, surprise.gif  |  "
+                       "Ключ API: переменная окружения ANTHROPIC_API_KEY",
+                  foreground="gray").pack(anchor='w', padx=4, pady=(0, 4))
         layout_notebook = ttk.Notebook(tab2);
         layout_notebook.pack(fill="both", expand=True, padx=4, pady=4);
         v_layout_tab, h_layout_tab = ScrollableFrame(layout_notebook), ScrollableFrame(layout_notebook);
@@ -2462,7 +2494,8 @@ class App(tk.Tk):
                     "badge_pos": "bl", "badge_margin": 0.05, "show_eval_bar": True, "eval_bar_position": "Слева",
                     "eval_bar_thickness": 30, "eval_bar_padding": 10, "trim_opening": True,
                     "trim_opening_cp_threshold": 70, "base_anim_duration": 0.4, "base_delay_duration": 0.8,
-                    "force_gui_speed": False}
+                    "force_gui_speed": False,
+                    "memes_enabled": False, "memes_dir": "assets/memes", "gif_duration": 2.0}
         try:
             settings = json.loads(CONFIG_FILE.read_text(encoding='utf-8')) if CONFIG_FILE.exists() else {}
         except:
@@ -2511,10 +2544,10 @@ class App(tk.Tk):
     # РЕФАКТОРИНГ ГЛАВНОГО ВОРКЕРА
     # ==============================================================================
 
-    def _run_game_analysis(self, moves: List[str], initial_fen: Optional[str], log_prefix: str) -> Tuple[Dict, Dict]:
+    def _run_game_analysis(self, moves: List[str], initial_fen: Optional[str], log_prefix: str) -> Tuple[Dict, Dict, List]:
         """Выполняет полный анализ одной игры (Lichess + Stockfish)."""
         self._log(f"{log_prefix}   - 🤖 Гибридный анализ...", is_gui_message=True)
-        eval_map, script = {}, {}
+        eval_map, script, game_states = {}, {}, []
         try:
             board = chess.Board(initial_fen) if initial_fen else chess.Board()
             all_fens_in_game = {board.shredder_fen()}
@@ -2557,7 +2590,7 @@ class App(tk.Tk):
         except Exception as e:
             self._log(f"{log_prefix}   - ❌ Ошибка при анализе: {e}", level=logging.ERROR, is_gui_message=True)
 
-        return eval_map, script
+        return eval_map, script, game_states
 
     def _process_single_game(self, game_info: Dict, game_index: int, total_games: int,
                              channel_game_counters: Dict) -> int:
@@ -2587,7 +2620,7 @@ class App(tk.Tk):
                     original_script["moves"] = [m for m in original_script["moves"] if m.get("ply", 0) >= moves_to_skip]
                     for m in original_script["moves"]: m["ply"] -= moves_to_skip
 
-        eval_map, analysis_script = self._run_game_analysis(moves, initial_fen_for_render, log_prefix)
+        eval_map, analysis_script, game_states = self._run_game_analysis(moves, initial_fen_for_render, log_prefix)
         # TODO: Merge original_script with analysis_script intelligently if needed. For now, analysis script is primary.
 
         if self.show_all_captures.get():
@@ -2757,14 +2790,81 @@ class App(tk.Tk):
                 filename_with_players = safe_filename(
                     f"{game_number_prefix}{title}_({players.get('white', 'w')}_vs_{players.get('black', 'b')}){suffix}")
 
-                if rnd.render_game_to_pipe(moves, filename_with_players, title, initial_fen_for_render,
-                                           script=analysis_script, trailer_info=trailer_info):
+                base_video = rnd.render_game_to_pipe(moves, filename_with_players, title, initial_fen_for_render,
+                                                     script=analysis_script, trailer_info=trailer_info)
+                if base_video:
                     videos_created_this_game += 1
+                    if self.memes_enabled.get() and _MEME_PIPELINE_OK and game_states:
+                        self._apply_meme_overlays(
+                            base_video, game_states, eval_map, analysis_script,
+                            rnd, log_prefix)
                 else:
                     self._log(f"{log_prefix}   ❌ Не удалось создать видео. Детали в логе.", is_gui_message=True,
                               level=logging.ERROR)
 
         return videos_created_this_game
+
+    def _apply_meme_overlays(self, base_video: Path, game_states: List[Dict],
+                             eval_map: Dict, analysis_script: Dict,
+                             rnd: "Renderer", log_prefix: str) -> None:
+        """Классифицирует события, выбирает GIF через LLM и прожигает оверлеи."""
+        memes_dir = Path(self.memes_dir.get())
+        if not memes_dir.is_dir():
+            self._log(f"{log_prefix}   ⚠️ Папка мемов не найдена: {memes_dir}", is_gui_message=True,
+                      level=logging.WARNING)
+            return
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            self._log(f"{log_prefix}   ⚠️ ANTHROPIC_API_KEY не задан — мем-оверлеи пропущены.",
+                      is_gui_message=True, level=logging.WARNING)
+            return
+
+        try:
+            self._log(f"{log_prefix}   🎭 Классификация событий и выбор мемов...", is_gui_message=True)
+
+            # script_map для compute_move_timestamps: {(ply, san): effects}
+            script_map = {(m["ply"], m["san"]): m.get("effects", {})
+                          for m in analysis_script.get("moves", [])}
+
+            moves_san = [gs["san"] for gs in game_states]
+            timestamps = compute_move_timestamps(
+                moves_san=moves_san,
+                script_map=script_map,
+                base_anim=rnd.base_anim_duration,
+                base_delay=rnd.base_delay_duration,
+                fps=rnd.fps,
+            )
+
+            llm_client = _anthropic.Anthropic(api_key=api_key)
+            specs = build_overlay_specs(
+                game_states=game_states,
+                eval_map=eval_map,
+                move_timestamps=timestamps,
+                memes_dir=memes_dir,
+                llm_client=llm_client,
+                gif_duration=self.gif_duration.get(),
+            )
+
+            if not specs:
+                self._log(f"{log_prefix}   🎭 Нет событий для мем-оверлея.", is_gui_message=True)
+                return
+
+            self._log(f"{log_prefix}   🎭 Найдено {len(specs)} оверлей(а), прожигаю в видео...",
+                      is_gui_message=True)
+            output_path = base_video.with_stem(base_video.stem + "_memes")
+            apply_meme_overlays(
+                input_video=base_video,
+                overlays=specs,
+                board_offset=rnd.board_offset,
+                square_size=rnd.square_size,
+                output_path=output_path,
+            )
+            self._log(f"{log_prefix}   ✅ Мем-видео: {output_path.name}", is_gui_message=True)
+
+        except Exception as e:
+            self._log(f"{log_prefix}   ❌ Ошибка мем-оверлея: {e}", level=logging.ERROR, is_gui_message=True)
+            logger.debug(traceback.format_exc())
 
     def _worker(self):
         """Главный рабочий метод, который запускает весь процесс."""
