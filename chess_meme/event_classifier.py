@@ -4,7 +4,12 @@ Rule-based event classifier.
 Determines what happened on each move using board state + engine eval.
 The LLM step is NOT involved here — all logic is deterministic.
 
-Event priority (highest first): checkmate > check > blunder > capture
+Event priority (highest first): checkmate > check > blunder > aggression > capture
+
+"aggression" — a move that looks bad by Stockfish (position quality drops)
+but creates a huge threat if the opponent does nothing (null-move eval).
+This captures the human emotional read of early queen attacks, sacrifices
+that carry deadly threats, and similar "objectively risky but terrifying" plays.
 """
 
 import math
@@ -25,7 +30,7 @@ _PIECE_CP: Dict[int, int] = {
 
 @dataclass
 class ChessEvent:
-    event_type: str        # "checkmate" | "check" | "blunder" | "capture"
+    event_type: str        # "checkmate" | "check" | "blunder" | "aggression" | "capture"
     square: int            # move.to_square — where GIF lands
     san: str
     fen_before: str
@@ -76,23 +81,59 @@ def _material_gain(board: chess.Board, move: chess.Move) -> int:
     return _PIECE_CP.get(captured.piece_type, 0) if captured else 0
 
 
+def _null_move_fen(fen_after: str) -> Optional[str]:
+    """
+    Return the FEN after the opponent "passes" their turn (null move).
+
+    Returns None if null move is illegal (e.g. the side to move is in check,
+    which can happen right after a checking move — but check events are already
+    handled by a higher-priority branch).
+    """
+    try:
+        board = chess.Board(fen_after)
+        if board.is_check():
+            return None
+        board.push(chess.Move.null())
+        return board.fen()
+    except Exception:
+        return None
+
+
 def classify_events(
     game_states: List[Dict[str, Any]],
     eval_map: Dict[str, Optional[Dict]],
     blunder_threshold: float = 0.20,
     capture_min_value_cp: int = 300,
+    aggression_threat_wp: float = 0.80,
+    aggression_quality_wp: float = 0.55,
 ) -> List[ChessEvent]:
     """
     Classify each move into exactly one event (or skip if unremarkable).
 
     Args:
-        game_states: list of dicts with keys {ply, san, fen_before, fen_after}
-        eval_map: {fen_str -> {pvs: [{cp, mate}]}} from Stockfish / Lichess
-        blunder_threshold: win-probability drop at which we call a move a blunder
-        capture_min_value_cp: minimum piece value (cp) for a capture to be notable
+        game_states:           [{ply, san, fen_before, fen_after}, ...]
+        eval_map:              {fen_str -> {pvs: [{cp, mate}]}} from Stockfish / Lichess.
+                               May optionally include null-move FENs pre-computed by the
+                               caller to enable "aggression" detection.
+        blunder_threshold:     win-probability drop at which we call a move a blunder
+        capture_min_value_cp:  minimum piece value (cp) for a capture to be notable
+        aggression_threat_wp:  null-move win-probability that qualifies as "huge threat"
+        aggression_quality_wp: real win-probability ceiling — above this the move is
+                               just good, not aggressively risky (no aggression tag)
 
     Returns:
         Sorted list of ChessEvent, one per notable move.
+
+    "aggression" detection (null-move technique):
+        After the move the position may look equal or bad for the attacker by
+        Stockfish.  But if the opponent could be made to pass their turn, the
+        attacker would be winning easily — meaning the move carries a devastating
+        threat.  When eval_map contains the null-move FEN (see _null_move_fen),
+        we compare:
+            null_wp  = mover's win-prob if opponent passes
+            real_wp  = mover's actual win-prob after opponent's best reply
+        If null_wp >= aggression_threat_wp AND real_wp < aggression_quality_wp,
+        the move is tagged "aggression".
     """
     events: List[ChessEvent] = []
 
@@ -107,7 +148,7 @@ def classify_events(
         fen_after = state["fen_after"]
         board_after = chess.Board(fen_after)
 
-        # Win-probability drop from the mover's perspective
+        # Win-probability from the mover's perspective
         ev_before = _pov_eval(eval_map.get(fen_before), board.turn)
         ev_after = _pov_eval(eval_map.get(fen_after), board.turn)
         wp_before = _wp_from_pov(ev_before)
@@ -116,17 +157,35 @@ def classify_events(
 
         mat_gain = _material_gain(board, move)
 
-        # Priority: checkmate > check > blunder > notable capture
+        # Priority: checkmate > check > blunder > aggression > notable capture
         if board_after.is_checkmate():
             event_type = "checkmate"
+
         elif board_after.is_check():
             event_type = "check"
+
         elif eval_drop >= blunder_threshold:
             event_type = "blunder"
-        elif board.is_capture(move) and mat_gain >= capture_min_value_cp:
-            event_type = "capture"
+
         else:
-            continue
+            # Check for "aggression": bad-looking move with a huge hidden threat.
+            # Requires null-move FEN to be present in eval_map (pre-computed).
+            nm_fen = _null_move_fen(fen_after)
+            if nm_fen and nm_fen in eval_map:
+                # Null-move eval is from opponent's turn, so flip perspective:
+                # after null move it's the original mover's turn again.
+                nm_eval = _pov_eval(eval_map.get(nm_fen), board.turn)
+                null_wp = _wp_from_pov(nm_eval)
+                if null_wp >= aggression_threat_wp and wp_after < aggression_quality_wp:
+                    event_type = "aggression"
+                elif board.is_capture(move) and mat_gain >= capture_min_value_cp:
+                    event_type = "capture"
+                else:
+                    continue
+            elif board.is_capture(move) and mat_gain >= capture_min_value_cp:
+                event_type = "capture"
+            else:
+                continue
 
         events.append(ChessEvent(
             event_type=event_type,

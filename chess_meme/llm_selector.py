@@ -21,10 +21,11 @@ if TYPE_CHECKING:
 # Which GIFs are valid candidates for each event type.
 # Files must exist in the memes directory (checked at call time).
 MEME_CANDIDATES: dict[str, List[str]] = {
-    "checkmate": ["crying.gif", "facepalm.gif"],
-    "check":     ["shock.gif", "surprise.gif"],
-    "blunder":   ["facepalm.gif", "crying.gif"],
-    "capture":   ["shock.gif", "surprise.gif"],
+    "checkmate":  ["crying.gif", "facepalm.gif"],
+    "check":      ["shock.gif", "surprise.gif"],
+    "blunder":    ["facepalm.gif", "crying.gif"],
+    "capture":    ["shock.gif", "surprise.gif"],
+    "aggression": ["dog.gif", "shock.gif"],   # "пизда вам пацаны" energy
 }
 
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -50,15 +51,20 @@ class MemeSelection:
 def _describe_event(event: "ChessEvent") -> str:
     color = "White" if event.move_color == chess.WHITE else "Black"
     templates = {
-        "checkmate": f"{color} delivered checkmate with {event.san} on move {event.move_number}.",
-        "check":     f"{color} gave check with {event.san} on move {event.move_number}.",
-        "blunder":   (
+        "checkmate":  f"{color} delivered checkmate with {event.san} on move {event.move_number}.",
+        "check":      f"{color} gave check with {event.san} on move {event.move_number}.",
+        "blunder":    (
             f"{color} blundered with {event.san} on move {event.move_number} "
             f"(win-probability dropped {event.eval_drop_wp:.0%})."
         ),
-        "capture":   (
+        "capture":    (
             f"{color} captured a piece worth {event.material_gain_cp} centipawns "
             f"with {event.san} on move {event.move_number}."
+        ),
+        "aggression": (
+            f"{color} played the aggressive {event.san} on move {event.move_number}. "
+            "Stockfish thinks it's dubious, but the move carries a devastating threat "
+            "that would win immediately if the opponent did nothing — pure intimidation."
         ),
     }
     return templates.get(event.event_type, f"{color} played {event.san} on move {event.move_number}.")

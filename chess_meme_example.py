@@ -31,7 +31,7 @@ try:
 except ImportError:
     anthropic = None
 
-from chess_meme import build_overlay_specs, apply_meme_overlays, compute_move_timestamps
+from chess_meme import build_overlay_specs, apply_meme_overlays, compute_move_timestamps, build_null_move_eval_map
 
 
 def parse_pgn(pgn_path: Path):
@@ -94,6 +94,9 @@ def main():
         print("Analysing positions with Stockfish...")
         all_fens = list({s["fen_before"] for s in game_states} | {s["fen_after"] for s in game_states})
         eval_map = get_eval_for_fen_batch_local(all_fens, stockfish)
+
+        print("Computing null-move evaluations for aggression detection...")
+        eval_map = build_null_move_eval_map(game_states, stockfish, existing_eval_map=eval_map)
     else:
         print(f"Stockfish не найден ('{args.stockfish}') — анализ пропущен (шах/мат/взятие ловятся без него).")
         eval_map = {}

@@ -5,11 +5,12 @@ Provides two things:
   1. compute_move_timestamps() — converts renderer speed params into wall-clock
      seconds so we know when each move's delay phase starts.
   2. apply_meme_overlays()    — post-processes the rendered .mp4 to burn in
-     the selected GIFs via ffmpeg overlay filters.
+     the selected GIFs via ffmpeg overlay filters, optionally mixing in
+     per-meme sound effects.
 """
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -19,9 +20,10 @@ import chess
 @dataclass
 class OverlaySpec:
     gif_path: Path
-    square: int       # chess square index (0-63)
-    start_sec: float  # when to start showing the GIF
+    square: int        # chess square index (0-63)
+    start_sec: float   # when to start showing the GIF
     duration_sec: float
+    sound_path: Optional[Path] = field(default=None)  # .mp3 to play at start_sec
 
 
 def compute_move_timestamps(
@@ -118,6 +120,60 @@ def _build_overlay_filters(
     return extra_inputs, filter_parts, last_tag, idx
 
 
+def _build_audio_filters(
+    overlays: List[OverlaySpec],
+    first_sound_input_idx: int,
+    has_video_audio: bool,
+) -> Tuple[List[str], List[str], str]:
+    """
+    Build ffmpeg input args and filter_complex fragments for sound overlays.
+
+    Returns:
+        extra_input_args  — ['-i', path, ...] for each sound file
+        filter_parts      — filtergraph segments for adelay / amix
+        audio_map         — '-map' target for the final mixed audio stream,
+                            or "0:a?" if there are no sounds
+    """
+    sound_overlays = [ov for ov in overlays if ov.sound_path and ov.sound_path.exists()]
+    if not sound_overlays:
+        return [], [], "0:a?"
+
+    extra_inputs: List[str] = []
+    filter_parts: List[str] = []
+    sound_tags: List[str] = []
+
+    for i, ov in enumerate(sound_overlays):
+        input_idx = first_sound_input_idx + i
+        extra_inputs += ["-i", str(ov.sound_path)]
+
+        delay_ms = int(ov.start_sec * 1000)
+        tag = f"[sa{i}]"
+
+        # Delay audio to start_sec, trim to gif duration, normalise timestamps
+        filter_parts.append(
+            f"[{input_idx}:a]"
+            f"adelay={delay_ms}|{delay_ms},"
+            f"atrim=duration={ov.start_sec + ov.duration_sec:.3f},"
+            f"asetpts=PTS-STARTPTS"
+            f"{tag}"
+        )
+        sound_tags.append(tag)
+
+    # Mix original audio (if present) with all sound effects
+    if has_video_audio:
+        all_in = "[0:a]" + "".join(sound_tags)
+        n = 1 + len(sound_tags)
+    else:
+        all_in = "".join(sound_tags)
+        n = len(sound_tags)
+
+    filter_parts.append(
+        f"{all_in}amix=inputs={n}:normalize=0:dropout_transition=0[aout]"
+    )
+
+    return extra_inputs, filter_parts, "[aout]"
+
+
 def apply_meme_overlays(
     input_video: Path,
     overlays: List[OverlaySpec],
@@ -125,9 +181,14 @@ def apply_meme_overlays(
     square_size: int,
     gif_scale: float = 1.0,
     output_path: Optional[Path] = None,
+    has_audio: bool = True,
 ) -> Path:
     """
     Post-process *input_video* to burn in GIF overlays and write *output_path*.
+
+    Sound effects (.mp3 in OverlaySpec.sound_path) are mixed into the output
+    using ffmpeg adelay + amix.  If has_audio=False, the source has no audio
+    track and only sound effects are placed (if any).
 
     If there are no overlays, input_video is returned unchanged.
     """
@@ -137,23 +198,39 @@ def apply_meme_overlays(
     if output_path is None:
         output_path = input_video.with_stem(input_video.stem + "_memes")
 
-    extra_inputs, filter_parts, last_tag, _ = _build_overlay_filters(
+    video_extra, video_filters, last_video_tag, next_idx = _build_overlay_filters(
         overlays, board_offset, square_size, gif_scale, base_input_idx=1
     )
 
-    cmd = ["ffmpeg", "-y", "-i", str(input_video)]
-    cmd += extra_inputs
+    audio_extra, audio_filters, audio_map = _build_audio_filters(
+        overlays,
+        first_sound_input_idx=next_idx,
+        has_video_audio=has_audio,
+    )
 
-    if filter_parts:
-        cmd += ["-filter_complex", ";".join(filter_parts)]
-        cmd += ["-map", last_tag, "-map", "0:a?"]
+    all_filter_parts = video_filters + audio_filters
+
+    cmd = ["ffmpeg", "-y", "-i", str(input_video)]
+    cmd += video_extra
+    cmd += audio_extra
+
+    if all_filter_parts:
+        cmd += ["-filter_complex", ";".join(all_filter_parts)]
+        video_map = last_video_tag if video_filters else "0:v"
+        cmd += ["-map", video_map]
+        if audio_filters:
+            cmd += ["-map", audio_map]
+        elif has_audio:
+            cmd += ["-map", "0:a?"]
     else:
-        cmd += ["-map", "0:v", "-map", "0:a?"]
+        cmd += ["-map", "0:v"]
+        if has_audio:
+            cmd += ["-map", "0:a?"]
 
     cmd += [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
         "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
+        "-c:a", "aac", "-b:a", "192k",
         str(output_path),
     ]
 
