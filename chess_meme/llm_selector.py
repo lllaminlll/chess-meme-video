@@ -67,22 +67,25 @@ def _describe_event(event: "ChessEvent") -> str:
 def select_meme(
     event: "ChessEvent",
     memes_dir: Path,
-    llm_client: "anthropic.Anthropic",
+    llm_client: Optional["anthropic.Anthropic"],
     model: str = _DEFAULT_MODEL,
 ) -> Optional[MemeSelection]:
     """
     Ask the LLM to pick the best meme for this event.
 
     Returns None if no candidate GIFs exist on disk.
-    Falls back to the first candidate if the LLM returns an invalid filename.
+    If llm_client is None (no API key), falls back to the first candidate
+    without calling the API. Also falls back if the LLM returns garbage.
     """
     candidates = [f for f in MEME_CANDIDATES.get(event.event_type, []) if (memes_dir / f).exists()]
     if not candidates:
         return None
 
-    # Single candidate → skip the API call entirely
+    # Single candidate, or no LLM client → skip the API call entirely
     if len(candidates) == 1:
         return MemeSelection(square=event.square, meme=candidates[0], reason="Only candidate available.")
+    if llm_client is None:
+        return MemeSelection(square=event.square, meme=candidates[0], reason="No LLM client, using first candidate.")
 
     description = _describe_event(event)
     candidates_str = ", ".join(candidates)

@@ -27,7 +27,7 @@ def build_overlay_specs(
     eval_map: Dict[str, Optional[Dict]],
     move_timestamps: List[float],
     memes_dir: Path,
-    llm_client: "anthropic.Anthropic",
+    llm_client: Optional["anthropic.Anthropic"] = None,
     blunder_threshold: float = 0.20,
     gif_duration: float = 2.0,
 ) -> List[OverlaySpec]:

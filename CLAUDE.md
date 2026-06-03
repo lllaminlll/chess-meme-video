@@ -274,13 +274,43 @@ y0 = board_offset[1] + rank_idx * square_size
 
 **Запуск CLI (без GUI):**
 ```bash
-ANTHROPIC_API_KEY=sk-... python chess_meme_example.py game.pgn \
+ANTHROPIC_API_KEY=sk-... python chess_meme_example.py input_pgn/game.pgn \
     --stockfish /usr/bin/stockfish \
     --memes ./assets/memes \
     --out ./output \
     --theme dark-wood \
     --aspect 9:16
 ```
+
+---
+
+## Что нужно перед запуском
+
+### Сгенерировать визуальные ассеты (один раз)
+```bash
+python generate_assets.py
+```
+Создаёт плейсхолдер-фигуры, доски всех тем и копирует шрифты в `chess_assets/`.
+Готовые красивые PNG можно положить туда же позже — структура совпадает.
+
+### Положить GIF-мемы
+```
+assets/memes/crying.gif  facepalm.gif  shock.gif  surprise.gif
+```
+
+### Подготовить партию
+Любой стандартный PGN (формат Lichess/Chess.com принимается как есть, включая
+заголовки `[FEN ...]`, `[Variant ...]`, нестандартные даты) → положить в `input_pgn/`.
+
+### Устойчивость пайплайна
+- **Без Stockfish** — шах / мат / взятие всё равно ловятся по правилам доски;
+  пропадают только зевки (blunder) и шкала оценки.
+- **Без `ANTHROPIC_API_KEY`** — мем выбирается по умолчанию (первый кандидат
+  для типа события), без вызова API.
+- **ffmpeg обязателен** — без него финальное видео не собрать.
+
+> Примечание: `chess` ставится только из бинарного wheel —
+> `pip install --only-binary :all: chess Pillow`.
 
 ---
 

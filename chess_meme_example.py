@@ -19,11 +19,17 @@ Run:
 
 import argparse
 import json
+import os
+import shutil
 from pathlib import Path
 
 import chess
 import chess.pgn
-import anthropic
+
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
 
 from chess_meme import build_overlay_specs, apply_meme_overlays, compute_move_timestamps
 
@@ -81,12 +87,19 @@ def main():
         annotate_moves,
     )
 
-    print("Analysing positions with Stockfish...")
-    all_fens = list({s["fen_before"] for s in game_states} | {s["fen_after"] for s in game_states})
-    eval_map = get_eval_for_fen_batch_local(all_fens, args.stockfish)
+    # Stockfish опционален: без него шах/мат/взятие всё равно ловятся по
+    # правилам доски, пропадают только зевки (blunder) и шкала оценки.
+    stockfish = shutil.which(args.stockfish) or (args.stockfish if Path(args.stockfish).exists() else None)
+    if stockfish:
+        print("Analysing positions with Stockfish...")
+        all_fens = list({s["fen_before"] for s in game_states} | {s["fen_after"] for s in game_states})
+        eval_map = get_eval_for_fen_batch_local(all_fens, stockfish)
+    else:
+        print(f"Stockfish не найден ('{args.stockfish}') — анализ пропущен (шах/мат/взятие ловятся без него).")
+        eval_map = {}
 
     print("Annotating moves...")
-    annotated = annotate_moves(game_states, eval_map, engine_path=args.stockfish)
+    annotated = annotate_moves(game_states, eval_map, engine_path=stockfish or "")
     script_map = {(i, s["san"]): ann for i, (s, ann) in enumerate(zip(game_states, annotated))}
 
     print("Rendering base video...")
@@ -120,8 +133,13 @@ def main():
         fps=args.fps,
     )
 
-    print("Selecting memes via LLM...")
-    client = anthropic.Anthropic()
+    # LLM опционален: без ключа берётся первый подходящий мем-кандидат.
+    if anthropic is not None and os.environ.get("ANTHROPIC_API_KEY"):
+        print("Selecting memes via LLM...")
+        client = anthropic.Anthropic()
+    else:
+        print("ANTHROPIC_API_KEY не задан — мем выбирается по умолчанию (первый кандидат).")
+        client = None
     specs = build_overlay_specs(
         game_states=game_states,
         eval_map=eval_map,
