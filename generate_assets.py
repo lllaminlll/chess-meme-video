@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Генератор плейсхолдер-ассетов для рендерера.
+Генератор визуальных ассетов для рендерера.
 
-Создаёт минимальный, но рабочий набор визуальных ассетов, чтобы можно было
-проверить пайплайн без поиска готовых PNG:
+Создаёт набор визуальных ассетов с улучшенным многослойным рендерингом:
   - chess_assets/pieces/{theme}/{code}.png  — фигуры (240×240, прозрачный фон)
   - chess_assets/boards/{theme}/board_240.png — доска (1920×1920)
   - chess_assets/fonts/*.ttf                 — шрифты DejaVu
 
-Фигуры рисуются сплошными шахматными глифами Unicode (♚♛♜♝♞♟) с обводкой,
-поэтому одинаково читаются на светлых и тёмных клетках.
+Фигуры рендерятся в 3 слоя (тень, свечение, основной глиф) через
+Image.alpha_composite для объёмного вида.
 
 Запуск:
     python generate_assets.py
@@ -19,16 +18,16 @@
 import shutil
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 THEMES = ["green", "game-room", "dark-wood", "glass"]
 
-# Цвета клеток (light, dark) по темам
+# Цвета клеток (light, dark) по темам — обновлённая палитра
 BOARD_COLORS = {
-    "green":      ((238, 238, 210), (118, 150, 86)),
-    "game-room":  ((235, 209, 166), (165, 117, 80)),
-    "dark-wood":  ((200, 160, 120), (110, 70, 40)),
-    "glass":      ((220, 230, 235), (130, 160, 175)),
+    "green":      ((240, 240, 210), (100, 140, 72)),   # классика chess.com
+    "game-room":  ((235, 208, 165), (160, 110, 74)),   # орех
+    "dark-wood":  ((195, 158, 115), (105, 65, 35)),    # тёмный орех
+    "glass":      ((215, 228, 232), (120, 152, 168)),  # стальное стекло
 }
 
 # code → сплошной глиф фигуры (filled chess symbols, U+265A..265F)
@@ -60,31 +59,102 @@ def _find_font(candidates):
 
 
 def make_piece(glyph: str, is_white: bool, font_path: str) -> Image.Image:
-    """Рисует фигуру: сплошной глиф с контрастной обводкой."""
-    img = Image.new("RGBA", (SQUARE, SQUARE), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    font = ImageFont.truetype(font_path, int(SQUARE * 0.78))
-
-    fill = (245, 245, 245, 255) if is_white else (30, 30, 30, 255)
-    stroke = (30, 30, 30, 255) if is_white else (235, 235, 235, 255)
-
+    """
+    Рисует фигуру в три слоя через alpha_composite:
+      1. Мягкая тень (смещённый глиф, размытый GaussianBlur)
+      2. Свечение / ореол (чуть шире, размытый)
+      3. Основной глиф (чёткий, полная непрозрачность)
+    """
+    font_size = int(SQUARE * 0.80)
+    sw = max(5, SQUARE // 28)   # base stroke width for sharp layer
     cx, cy = SQUARE // 2, SQUARE // 2
-    draw.text((cx, cy), glyph, font=font, anchor="mm",
-              fill=fill, stroke_width=max(3, SQUARE // 40), stroke_fill=stroke)
-    return img
+
+    font = ImageFont.truetype(font_path, font_size)
+    base = Image.new("RGBA", (SQUARE, SQUARE), (0, 0, 0, 0))
+
+    # --- Layer 1: soft shadow ---
+    shadow_layer = Image.new("RGBA", (SQUARE, SQUARE), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow_layer)
+    shadow_alpha = 140 if is_white else 180
+    shadow_draw.text(
+        (cx + 4, cy + 5), glyph, font=font, anchor="mm",
+        fill=(0, 0, 0, shadow_alpha),
+        stroke_width=sw + 3,
+        stroke_fill=(0, 0, 0, shadow_alpha),
+    )
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=3.5))
+    base = Image.alpha_composite(base, shadow_layer)
+
+    # --- Layer 2: glow / halo ---
+    glow_layer = Image.new("RGBA", (SQUARE, SQUARE), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow_layer)
+    if is_white:
+        glow_fill = (255, 250, 230, 90)
+        glow_stroke = (255, 250, 230, 90)
+    else:
+        glow_fill = (90, 70, 40, 60)
+        glow_stroke = (90, 70, 40, 60)
+    glow_draw.text(
+        (cx, cy), glyph, font=font, anchor="mm",
+        fill=glow_fill,
+        stroke_width=sw + 5,
+        stroke_fill=glow_stroke,
+    )
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=5))
+    base = Image.alpha_composite(base, glow_layer)
+
+    # --- Layer 3: sharp main glyph ---
+    sharp_layer = Image.new("RGBA", (SQUARE, SQUARE), (0, 0, 0, 0))
+    sharp_draw = ImageDraw.Draw(sharp_layer)
+    if is_white:
+        fill = (252, 247, 236, 255)    # тёплый кремовый
+        stroke = (42, 32, 18, 255)     # тёмный контур
+    else:
+        fill = (28, 20, 12, 255)       # почти чёрный
+        stroke = (208, 192, 168, 255)  # бежевый контур
+    sharp_draw.text(
+        (cx, cy), glyph, font=font, anchor="mm",
+        fill=fill,
+        stroke_width=sw,
+        stroke_fill=stroke,
+    )
+    base = Image.alpha_composite(base, sharp_layer)
+
+    return base
 
 
-def make_board(light, dark) -> Image.Image:
-    """Рисует доску 1920×1920 двумя цветами клеток."""
+def make_board(light: tuple, dark: tuple) -> Image.Image:
+    """
+    Рисует доску 1920×1920:
+      - Основной прямоугольник клетки
+      - Тонкая внутренняя рамка для объёма
+      - Внешняя рамка доски 3px
+    """
     img = Image.new("RGB", (BOARD_PX, BOARD_PX))
     draw = ImageDraw.Draw(img)
+
     for rank in range(8):
         for file in range(8):
-            color = light if (rank + file) % 2 == 0 else dark
-            draw.rectangle(
-                [file * SQUARE, rank * SQUARE, (file + 1) * SQUARE, (rank + 1) * SQUARE],
-                fill=color,
-            )
+            is_light = (rank + file) % 2 == 0
+            color = light if is_light else dark
+            x0 = file * SQUARE
+            y0 = rank * SQUARE
+            x1 = x0 + SQUARE
+            y1 = y0 + SQUARE
+
+            # Main cell fill
+            draw.rectangle([x0, y0, x1, y1], fill=color)
+
+            # Thin inner border for depth
+            if is_light:
+                inner_border = tuple(min(255, c + 10) for c in color)
+            else:
+                inner_border = tuple(max(0, c - 12) for c in color)
+            draw.rectangle([x0 + 1, y0 + 1, x1 - 2, y1 - 2], outline=inner_border, width=1)
+
+    # Outer board border
+    draw.rectangle([0, 0, BOARD_PX - 1, BOARD_PX - 1], outline=(30, 20, 10), width=3)
+
     return img
 
 
@@ -105,7 +175,7 @@ def main():
         shutil.copy(bold, fonts_dir / "DejaVuSans-Bold.ttf")
     print(f"✓ Шрифты → {fonts_dir}")
 
-    # 2. Фигуры (одинаковые для всех тем) + 3. доски
+    # 2. Фигуры (одинаковые для всех тем) + 3. Доски
     for theme in THEMES:
         pieces_dir = root / "chess_assets" / "pieces" / theme
         boards_dir = root / "chess_assets" / "boards" / theme

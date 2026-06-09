@@ -63,8 +63,8 @@ def _describe_event(event: "ChessEvent") -> str:
         ),
         "aggression": (
             f"{color} played the aggressive {event.san} on move {event.move_number}. "
-            "Stockfish thinks it's dubious, but the move carries a devastating threat "
-            "that would win immediately if the opponent did nothing — pure intimidation."
+            "Stockfish rates it as dubious, but it carries a devastating threat "
+            "— if the opponent does nothing, it wins immediately."
         ),
     }
     return templates.get(event.event_type, f"{color} played {event.san} on move {event.move_number}.")

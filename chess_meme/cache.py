@@ -3,6 +3,10 @@ FEN-keyed cache for LLM meme selections.
 
 Keyed by (fen_before, event_type) so identical positions in different games
 don't re-pay for an API call.  Stored as a flat JSON file.
+
+In-memory dict (_CACHE) is loaded once on first access and kept in sync with
+the on-disk file.  Reads are O(1) dict lookups; writes update memory first,
+then flush to disk atomically.
 """
 
 import json
@@ -12,8 +16,19 @@ from typing import Any, Optional
 
 _CACHE_FILE = Path("llm_meme_cache.json")
 
+# In-memory store.  None means "not loaded yet".
+_CACHE: Optional[dict] = None
 
-def _load() -> dict:
+
+def _ensure_loaded() -> dict:
+    """Load cache from disk if not already in memory."""
+    global _CACHE
+    if _CACHE is None:
+        _CACHE = _load_from_disk()
+    return _CACHE
+
+
+def _load_from_disk() -> dict:
     if not _CACHE_FILE.exists():
         return {}
     try:
@@ -37,12 +52,24 @@ def _key(fen_before: str, event_type: str) -> str:
 
 
 def get(fen_before: str, event_type: str) -> Optional[dict]:
-    """Return cached payload or None."""
-    return _load().get(_key(fen_before, event_type))
+    """Return cached payload or None.  Reads from in-memory dict (O(1))."""
+    entry = _ensure_loaded().get(_key(fen_before, event_type))
+    if entry is None:
+        return None
+    return entry.get("data")
 
 
 def put(fen_before: str, event_type: str, payload: dict) -> None:
-    """Persist payload under (fen_before, event_type)."""
-    cache = _load()
+    """Persist payload under (fen_before, event_type).
+
+    Updates in-memory dict immediately, then flushes to disk atomically.
+    """
+    cache = _ensure_loaded()
     cache[_key(fen_before, event_type)] = {"data": payload, "ts": time.time()}
     _save(cache)
+
+
+def invalidate() -> None:
+    """Drop the in-memory cache (forces reload from disk on next access)."""
+    global _CACHE
+    _CACHE = None

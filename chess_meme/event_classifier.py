@@ -10,6 +10,10 @@ Event priority (highest first): checkmate > check > blunder > aggression > captu
 but creates a huge threat if the opponent does nothing (null-move eval).
 This captures the human emotional read of early queen attacks, sacrifices
 that carry deadly threats, and similar "objectively risky but terrifying" plays.
+
+Aggression detection guards:
+  - King moves are excluded (king running from check is not aggression).
+  - Moves made while already in check are excluded (escape moves only).
 """
 
 import math
@@ -104,7 +108,7 @@ def classify_events(
     eval_map: Dict[str, Optional[Dict]],
     blunder_threshold: float = 0.20,
     capture_min_value_cp: int = 300,
-    aggression_threat_wp: float = 0.80,
+    aggression_threat_wp: float = 0.65,   # lowered from 0.80 — catches Qd8-style threats at ~74%
     aggression_quality_wp: float = 0.55,
 ) -> List[ChessEvent]:
     """
@@ -118,6 +122,7 @@ def classify_events(
         blunder_threshold:     win-probability drop at which we call a move a blunder
         capture_min_value_cp:  minimum piece value (cp) for a capture to be notable
         aggression_threat_wp:  null-move win-probability that qualifies as "huge threat"
+                               (lowered to 0.65 to catch queen attacks and similar threats)
         aggression_quality_wp: real win-probability ceiling — above this the move is
                                just good, not aggressively risky (no aggression tag)
 
@@ -134,6 +139,12 @@ def classify_events(
             real_wp  = mover's actual win-prob after opponent's best reply
         If null_wp >= aggression_threat_wp AND real_wp < aggression_quality_wp,
         the move is tagged "aggression".
+
+        Guards that prevent false positives:
+          - King moves are never tagged aggression (king fleeing check looks like
+            a threat due to null-move eval but is purely defensive).
+          - Moves made while already in check are never tagged aggression
+            (forced escape moves are not aggressive intent).
     """
     events: List[ChessEvent] = []
 
@@ -170,8 +181,20 @@ def classify_events(
         else:
             # Check for "aggression": bad-looking move with a huge hidden threat.
             # Requires null-move FEN to be present in eval_map (pre-computed).
+            #
+            # Guards: skip king moves (fleeing check ≠ aggression) and moves
+            # made while already in check (forced escapes ≠ aggression).
+            piece = board.piece_at(move.from_square)
+            is_king_move = piece is not None and piece.piece_type == chess.KING
+            is_check_escape = board.is_check()
+
             nm_fen = _null_move_fen(fen_after)
-            if nm_fen and nm_fen in eval_map:
+            if (
+                nm_fen
+                and nm_fen in eval_map
+                and not is_king_move
+                and not is_check_escape
+            ):
                 # Null-move eval is from opponent's turn, so flip perspective:
                 # after null move it's the original mover's turn again.
                 nm_eval = _pov_eval(eval_map.get(nm_fen), board.turn)
